@@ -1,0 +1,264 @@
+<html lang="ja">
+<head>
+
+    <meta charset="UTF-8">
+
+    <title>WebAudioAPIで鍵盤</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/1.11.3/jquery.min.js"></script>
+<style>
+
+body {
+    /* スマホのロングタップでの文字選択挙動を抑制 */
+    -webkit-touch-callout:none;
+    -webkit-user-select:none;
+}
+
+#contents {
+}
+#keyboard {
+    height: 250px;
+}
+.key {
+    width: 50px;
+    height: 200px;
+    border: solid 1px gray;
+    float: left;
+    position: relative;
+    cursor: pointer;
+}
+.key:hover, .key.play {
+    background: gray;
+}
+.sharp {
+    margin-left: -25px;
+    height: 120px;
+    background: black;
+    color: white;
+    z-index: 10;
+}
+.sharp + .key {
+    margin-left: -28px;
+}
+.normal + .normal {
+    margin-left: -1px;
+}
+
+.key div {
+    position: absolute;
+    bottom: 0px;
+    padding: 5px;
+}
+
+footer {
+    border-top: 3px solid gray;
+}
+</style>
+
+
+<script>
+// createKeyboard呼び出しで作成される
+var onkai_hash = {};
+// オクターブ範囲指定
+var createKeyboard  = function(octave_low, octave_high) {
+    // ド～ド
+    var onkai = [
+        {
+            scale   : "ド",
+            sharp   : false,
+            scale_en: "C",
+        },
+        {
+            scale   : "ド#",
+            sharp   : true,
+            scale_en: "Cs",
+        },
+        {
+            scale   : "レ",
+            sharp   : false,
+            scale_en: "D",
+        },
+        {
+            scale   : "レ#",
+            sharp   : true,
+            scale_en: "Ds",
+        },
+        {
+            scale   : "ミ",
+            sharp   : false,
+            scale_en: "E",
+        },
+        {
+            scale   : "ファ",
+            sharp   : false,
+            scale_en: "F",
+        },
+        {
+            scale   : "ファ#",
+            sharp   : true,
+            scale_en: "Fs",
+        },
+        {
+            scale   : "ソ",
+            sharp   : false,
+            scale_en: "G",
+        },
+        {
+            scale   : "ソ#",
+            sharp   : true,
+            scale_en: "Gs",
+        },
+        {
+            scale   : "ラ",
+            sharp   : false,
+            scale_en: "A",
+        },
+        {
+            scale   : "ラ#",
+            sharp   : true,
+            scale_en: "As",
+        },
+        {
+            scale   : "シ",
+            sharp   : false,
+            scale_en: "B",
+        },
+    ];
+
+    //var octave  = 3;
+    var diff    = -9; // ラ = 0として、ドは-9個となり
+    for (var octave = octave_low ; octave <= octave_high ; octave++) {
+       $.each(onkai, function(i, r) {
+           // octave4 の ラ(a)が440Hz
+           var hz  = 440 * Math.pow(2, ((octave  - 3)*12 + diff + i) /12);
+           var key = $("<div>").html(
+               $("<div>").html(r.scale)
+           ).data("hz", hz).addClass("key").attr("id", `${r.scale_en.toLowerCase()}${octave}`);
+           if (r.sharp) {
+               key.addClass("sharp");
+           }
+           else {
+               key.addClass("normal");
+           }
+           $("#keyboard").append(key);
+           onkai_hash[r.scale_en]  = r;
+       });
+    }
+}   
+
+window.AudioContext = window.AudioContext || window.webkitWindowContext;
+var ctx = new window.AudioContext();
+// Oscillator使い回す。
+var oscillators = [];
+var getOscillator   = function() {
+    var ret;
+    $.each(oscillators, function(i, osc) {
+        if (osc.using  == false) {
+            ret = osc;
+            return false;
+        }
+    });
+    if (ret)  return ret.node;
+    // 開いているのがなかったので作成
+    var osc = ctx.createOscillator();
+    osc.detune.value    = 0;
+    osc.start();
+    oscillators.push({
+        node    : osc,
+        using   : true
+    });
+    return osc;
+}
+var returnOscillator    = function(node) {
+    $.each(oscillators, function(i, osc) {
+        if (osc.node == node) {
+            osc.using = false;
+            return false;
+        }
+    });
+}
+
+var gainNode;
+$(function() {
+    createKeyboard(3, 5);
+
+    gainNode    = ctx.createGain();
+    gainNode.gain.value = $("#volume").val() / 100.0;
+    var outNode     = ctx.destination;
+    gainNode.connect(outNode);
+    var source;
+
+    $("#volume").on("change", function() {
+        var val = $(this).val();
+        gainNode.gain.value = val / 100.0;
+    });
+
+    // key
+    $(".key")
+    .on("mouseenter touchstart", function() {
+        playOscillator(this);
+    })
+    .on("mouseleave touchend touchcancel", function() {
+        stopOscillator(this);
+    });
+
+    // preset
+    $(".preset").on("click", function() {
+        var name    = $(this).data("name");
+        loadPreset(name)
+            .done(function(d) {
+                playPreset(d.notes, d.beat);
+            });
+    });
+});
+
+// 音を鳴らす
+var playOscillator  = function(domElement) {
+    var $dom    = $(domElement);
+     if ($dom.data("oscillator") != null) {
+         return;
+     }
+     $dom.addClass("play");
+     var hz  = $dom.data("hz");
+     console.log(hz);
+     // oscillator 作成
+     var node    = getOscillator();
+     // 下記は音がグライド（スムーズに変わる）してしまう
+     //node.frequency.value  = hz;
+     // 下記だとすぐに周波数が変わる。　のだが、chrome53.0.2785.116 m (64-bit)(windows)では変わらなくなってしまった。
+     node.frequency.setValueAtTime(hz, 0);
+     node.type   = "sine";
+     node.connect(gainNode);
+     $dom.data("oscillator", node);
+}
+// 音を止める
+var stopOscillator  = function(domElement) {
+    var $dom    = $(domElement);
+    $dom.removeClass("play");
+    console.log("out");
+    var node    = $dom.data("oscillator");
+    if (node == null)  return;
+    // ここでぶちっとノイズが入る。正弦波をいきなり打ち切っているのが原因。
+    node.disconnect(gainNode);
+    returnOscillator(node);
+    $dom.data("oscillator", null);
+}
+
+</script>
+
+
+</head>
+<body>
+
+    <div id="contents">
+        Vol: <input id="volume" type="range" min=0 max=100 value=20>
+        <hr>
+
+        <div id="keyboard">
+        </div>
+
+        <hr>
+
+    </div>
+
+</body>
+</html>
